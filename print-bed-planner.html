@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Bed Planner</title>
+<meta name="description" content="Work out how many cards fit on a 3D printer's bed at a given size, and watch the layout change as you adjust it.">
+
+<!-- Shared suite shell: back button + tool switcher. See docs/adding-a-tool.md -->
+<link rel="stylesheet" href="assets/app-shell.css">
+<script src="assets/tools.js" defer></script>
+<script src="assets/app-shell.js" data-theme="auto" defer></script>
+
+<style>
+  :root {
+    --paper: #f6f7f8;
+    --panel: #ffffff;
+    --panel-2: #eff1f0;
+    --ink: #14171c;
+    --ink-2: #5f666f;
+    --ink-3: #8b929b;
+    --line: #e1e4e7;
+    --accent: #8b5cf6;
+    --accent-ink: #ffffff;
+    --accent-soft: #ede4fd;
+    --warn: #a06a12;
+    --warn-soft: #f8ecd2;
+    --bed: #e7e9eb;
+    --bed-line: #c9ced3;
+    --shadow: 0 1px 2px rgba(16, 22, 32, .05), 0 6px 20px rgba(16, 22, 32, .06);
+    --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0d0f13;
+      --panel: #15181e;
+      --panel-2: #1d2026;
+      --ink: #e8eaed;
+      --ink-2: #a0a7b1;
+      --ink-3: #6d747e;
+      --line: #24282f;
+      --accent: #c084fc;
+      --accent-ink: #1a1030;
+      --accent-soft: #322554;
+      --warn: #d9a94e;
+      --warn-soft: #3d321a;
+      --bed: #14171c;
+      --bed-line: #2f343c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 6px 20px rgba(0, 0, 0, .35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 36px 24px 96px; }
+
+  .masthead { margin-bottom: 28px; }
+  .masthead h1 { font-size: 26px; font-weight: 650; letter-spacing: -.015em; margin: 0 0 6px; }
+  .masthead p { margin: 0; color: var(--ink-2); max-width: 66ch; }
+
+  .layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+  .step {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .step:last-child { margin-bottom: 0; }
+  .step-head { display: flex; align-items: baseline; gap: 12px; padding: 16px 20px 0; }
+  .step-num {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    color: var(--accent); letter-spacing: .1em;
+  }
+  .step-head h2 { font-size: 16px; font-weight: 650; margin: 0; }
+  .step-body { padding: 12px 20px 18px; }
+  .hint { margin: 12px 0 0; color: var(--ink-2); font-size: 13px; }
+
+  /* --- number fields -------------------------------------------------- */
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .field { display: block; }
+  .field > span.lab { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .inputmm { position: relative; display: block; }
+  .inputmm input[type="number"] {
+    width: 100%; padding: 8px 34px 8px 10px;
+    font-family: var(--mono); font-size: 15px;
+    color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .inputmm em {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-style: normal; font-size: 12px; color: var(--ink-3); pointer-events: none;
+  }
+  input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+  input:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .slider-row { margin-top: 14px; }
+  .slider-row .lab {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: var(--ink-2); margin-bottom: 2px;
+  }
+  .slider-row .lab b { font-family: var(--mono); font-weight: 500; color: var(--ink); }
+
+  .opt { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; font-size: 14px; }
+  .opt input { margin: 3px 0 0; accent-color: var(--accent); }
+  .opt small { display: block; color: var(--ink-2); font-size: 12.5px; line-height: 1.45; }
+
+  .btn-reset {
+    margin-top: 16px; padding: 7px 14px;
+    font: inherit; font-size: 13px; color: var(--ink-2);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+  }
+  .btn-reset:hover { border-color: var(--ink-3); color: var(--ink); }
+
+  /* --- the answer ------------------------------------------------------ */
+  .tally { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .tally strong {
+    font-size: 44px; font-weight: 680; letter-spacing: -.03em; line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .tally .unit { font-size: 15px; color: var(--ink-2); }
+  .arrangement { margin: 8px 0 0; font-size: 15px; color: var(--ink); min-height: 1.5em; }
+  .arrangement b { font-weight: 620; }
+  .extra-note { color: var(--warn); }
+  .nofit { color: var(--warn); font-weight: 600; }
+
+  .figure {
+    margin: 18px 0 0; padding: 16px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; max-height: 60vh; }
+
+  .facts { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 8px; }
+  .facts li {
+    display: flex; gap: 10px; justify-content: space-between; align-items: baseline;
+    font-size: 13.5px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  .facts li:last-child { border-bottom: 0; padding-bottom: 0; }
+  .facts .k { color: var(--ink-2); }
+  .facts .v { font-family: var(--mono); font-size: 13px; text-align: right; }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0 0; font-size: 12.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend[hidden] { display: none; }
+  .swatch { width: 13px; height: 17px; border-radius: 2px; border: 1px solid var(--accent); background: var(--accent-soft); }
+  .swatch.turned { border-color: var(--warn); background: var(--warn-soft); }
+
+  footer { margin-top: 32px; color: var(--ink-3); font-size: 13px; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>Print Bed Planner</h1>
+    <p>Set the size of your print bed and the size of one card, and see how many fit and how they
+      sit. Everything is in millimetres. Cards are treated as flat rectangles &mdash; how tall they
+      stand off the bed is ignored.</p>
+  </header>
+
+  <div class="layout">
+
+    <div class="controls">
+
+      <section class="step">
+        <div class="step-head"><span class="step-num">BED</span><h2>The print surface</h2></div>
+        <div class="step-body">
+          <div class="pair">
+            <label class="field"><span class="lab">Width</span>
+              <span class="inputmm"><input id="bed-w" type="number" min="10" max="2000" step="0.1" value="220" inputmode="decimal"><em>mm</em></span>
+            </label>
+            <label class="field"><span class="lab">Depth</span>
+              <span class="inputmm"><input id="bed-h" type="number" min="10" max="2000" step="0.1" value="220" inputmode="decimal"><em>mm</em></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-head"><span class="step-num">CARD</span><h2>One card</h2></div>
+        <div class="step-body">
+          <div class="pair">
+            <label class="field"><span class="lab">Width</span>
+              <span class="inputmm"><input id="card-w" type="number" min="1" max="2000" step="0.1" value="63.5" inputmode="decimal"><em>mm</em></span>
+            </label>
+            <label class="field"><span class="lab">Length</span>
+              <span class="inputmm"><input id="card-h" type="number" min="1" max="2000" step="0.1" value="88.9" inputmode="decimal"><em>mm</em></span>
+            </label>
+          </div>
+
+          <div class="slider-row">
+            <span class="lab">Width <b id="card-w-echo">63.5 mm</b></span>
+            <input id="card-w-range" type="range" min="1" max="220" step="0.5" value="63.5" aria-label="Card width">
+          </div>
+          <div class="slider-row">
+            <span class="lab">Length <b id="card-h-echo">88.9 mm</b></span>
+            <input id="card-h-range" type="range" min="1" max="220" step="0.5" value="88.9" aria-label="Card length">
+          </div>
+
+          <p class="hint">Drag either slider to watch the count change. The whole batch is turned
+            sideways automatically whenever that fits more.</p>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-head"><span class="step-num">GAP</span><h2>Space around each card</h2></div>
+        <div class="step-body">
+          <label class="field" style="max-width:150px"><span class="lab">Buffer</span>
+            <span class="inputmm"><input id="gap" type="number" min="0" max="100" step="0.1" value="2" inputmode="decimal"><em>mm</em></span>
+          </label>
+          <p class="hint">Kept between neighbouring cards <em>and</em> between the outside cards and
+            the edge of the bed. The dashed line on the picture shows where the edge gap ends.</p>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-head"><span class="step-num">EXTRA</span><h2>The spare strip</h2></div>
+        <div class="step-body">
+          <label class="opt">
+            <input id="opt-extras" type="checkbox" checked>
+            <span>Turn spare cards sideways
+              <small>Fills the leftover strip along the edge with cards laid the other way round.
+                Switch it off if you want one tidy grid and nothing else.</small></span>
+          </label>
+          <button type="button" class="btn-reset" id="btn-reset">Back to defaults</button>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="preview">
+      <section class="step">
+        <div class="step-body" style="padding:20px">
+          <div class="tally"><strong id="count">&mdash;</strong><span class="unit" id="count-unit">cards per print</span></div>
+          <p class="arrangement" id="arrangement">&nbsp;</p>
+
+          <div class="figure">
+            <svg id="bed" role="img" aria-label="Plan view of the print bed with the cards laid out on it."></svg>
+          </div>
+
+          <div class="legend" id="legend" hidden>
+            <span><i class="swatch"></i> Laid the main way</span>
+            <span><i class="swatch turned"></i> Turned to fill the spare strip</span>
+          </div>
+
+          <ul class="facts" id="facts"></ul>
+        </div>
+      </section>
+    </div>
+
+  </div>
+
+  <footer>Runs entirely in your browser. Nothing you type here is uploaded anywhere.</footer>
+
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   How the packing works.
+
+   With a buffer of g kept between neighbouring cards AND around
+   the edge of the bed, a row of n cards needs n*card + (n+1)*g
+   of bed. Rearranged, that is a plain grid problem:
+
+       usable = bed - g        cell = card + g
+       n      = floor(usable / cell)
+
+   So every position is worked out in that shifted space, and the
+   real spot on the bed is just g + (shifted position). Leftover
+   strips are filled exactly the same way, which is why
+   fitRegion() serves both the main grid and the offcuts.
+   ============================================================ */
+
+var EPS = 1e-9;
+var DEFAULTS = { bedW: 220, bedH: 220, cardW: 63.5, cardH: 88.9, gap: 2 };
+var MAX_DRAWN = 3000;   /* past this the picture is unreadable and slow; say so instead */
+
+function $(id) { return document.getElementById(id); }
+
+var els = {
+  bedW: $("bed-w"), bedH: $("bed-h"),
+  cardW: $("card-w"), cardH: $("card-h"),
+  cardWr: $("card-w-range"), cardHr: $("card-h-range"),
+  cardWe: $("card-w-echo"), cardHe: $("card-h-echo"),
+  gap: $("gap"), extras: $("opt-extras"), reset: $("btn-reset"),
+  count: $("count"), unit: $("count-unit"), arrangement: $("arrangement"),
+  svg: $("bed"), legend: $("legend"), facts: $("facts")
+};
+
+/* ---------- numbers ---------- */
+
+function num(input) {
+  var v = parseFloat(input.value);
+  return isFinite(v) ? v : NaN;
+}
+
+function mm(n) {
+  var r = Math.round(n * 10) / 10;
+  return Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : r.toFixed(1);
+}
+
+/* For any figure the reader might type straight back in as a card size.
+   Rounding to nearest can hand back a number a hair OVER the true limit,
+   which silently costs a row or a column. Always round these down. */
+function mmDown(n) {
+  return mm(Math.floor(n * 10 + EPS) / 10);
+}
+
+/* ---------- packing ---------- */
+
+/* How many cards fit in one rectangular patch of shifted space, tried both
+   ways round, keeping whichever is better. Positions come back in real bed
+   millimetres. */
+function fitRegion(x0, y0, rw, rh, cardW, cardH, gap, build) {
+  var ways = (cardW === cardH) ? [[cardW, cardH]] : [[cardW, cardH], [cardH, cardW]];
+  var best = { n: 0, cols: 0, rows: 0, w: cardW, h: cardH, rects: [] };
+  var i, r, c;
+
+  for (i = 0; i < ways.length; i++) {
+    var w = ways[i][0], h = ways[i][1];
+    var cols = Math.floor(rw / (w + gap) + EPS);
+    var rows = Math.floor(rh / (h + gap) + EPS);
+    if (cols < 1 || rows < 1) continue;
+    if (cols * rows <= best.n) continue;
+    best = { n: cols * rows, cols: cols, rows: rows, w: w, h: h, rects: [] };
+  }
+
+  if (build && best.n) {
+    for (r = 0; r < best.rows; r++) {
+      for (c = 0; c < best.cols; c++) {
+        best.rects.push({
+          x: gap + x0 + c * (best.w + gap),
+          y: gap + y0 + r * (best.h + gap),
+          w: best.w, h: best.h
+        });
+      }
+    }
+  }
+  return best;
+}
+
+/* The best plan for one bed / card / gap combination. */
+function plan(bedW, bedH, cardW, cardH, gap, allowExtras, build) {
+  var empty = { total: 0, grid: 0, cols: 0, rows: 0, w: cardW, h: cardH,
+                turned: false, main: [], extras: [] };
+  if (!(bedW > 0 && bedH > 0 && cardW > 0 && cardH > 0 && gap >= 0)) return empty;
+
+  var W = bedW - gap, H = bedH - gap;             /* shifted space */
+  if (W <= 0 || H <= 0) return empty;
+
+  var ways = (cardW === cardH) ? [[cardW, cardH, false]]
+                               : [[cardW, cardH, false], [cardH, cardW, true]];
+  var best = null;
+  var i, r, c;
+
+  for (i = 0; i < ways.length; i++) {
+    var w = ways[i][0], h = ways[i][1], turned = ways[i][2];
+    var cols = Math.floor(W / (w + gap) + EPS);
+    var rows = Math.floor(H / (h + gap) + EPS);
+    if (cols < 1 || rows < 1) continue;
+
+    var usedX = cols * (w + gap), usedY = rows * (h + gap);
+    var nExtra = 0, parts = null;
+
+    if (allowExtras) {
+      /* Two ways to carve the offcut so the strips never overlap:
+         (a) side strip takes the full depth, end strip only the width under
+             the grid;  (b) the other way round. Keep the better one. */
+      var a1 = fitRegion(usedX, 0, W - usedX, H, cardW, cardH, gap, build);
+      var a2 = fitRegion(0, usedY, usedX, H - usedY, cardW, cardH, gap, build);
+      var b1 = fitRegion(0, usedY, W, H - usedY, cardW, cardH, gap, build);
+      var b2 = fitRegion(usedX, 0, W - usedX, usedY, cardW, cardH, gap, build);
+      if (a1.n + a2.n >= b1.n + b2.n) { nExtra = a1.n + a2.n; parts = [a1, a2]; }
+      else                            { nExtra = b1.n + b2.n; parts = [b1, b2]; }
+    }
+
+    var cand = {
+      total: cols * rows + nExtra,
+      grid: cols * rows,
+      cols: cols, rows: rows, w: w, h: h, turned: turned,
+      main: [], extras: []
+    };
+
+    if (build) {
+      for (r = 0; r < rows; r++) {
+        for (c = 0; c < cols; c++) {
+          cand.main.push({ x: gap + c * (w + gap), y: gap + r * (h + gap), w: w, h: h });
+        }
+      }
+      if (parts) cand.extras = parts[0].rects.concat(parts[1].rects);
+    }
+
+    /* Most cards wins; on a tie prefer the tidier single grid. */
+    if (!best || cand.total > best.total ||
+        (cand.total === best.total && cand.grid > best.grid)) best = cand;
+  }
+
+  return best || empty;
+}
+
+/* The largest the card could grow, keeping its proportions, without losing
+   one off the plate. Counting only, so it is cheap enough to run live. */
+function roomToGrow(bedW, bedH, cardW, cardH, gap, allowExtras, target) {
+  if (target < 1) return null;
+  function fits(s) {
+    return plan(bedW, bedH, cardW * s, cardH * s, gap, allowExtras, false).total >= target;
+  }
+  if (!fits(1)) return null;
+  var lo = 1, hi = 2, i;
+  while (hi < 64 && fits(hi)) { lo = hi; hi *= 2; }
+  if (hi >= 64) return null;
+  for (i = 0; i < 40; i++) {
+    var mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid; else hi = mid;
+  }
+  return { w: cardW * lo, h: cardH * lo, scale: lo };
+}
+
+/* ---------- drawing ---------- */
+
+var SVG_FONT = "Segoe UI, system-ui, -apple-system, sans-serif";
+
+function draw(bedW, bedH, gap, p) {
+  var svg = els.svg;
+  var span = Math.max(bedW, bedH);
+  var pad = span * 0.085;
+  var fs = span * 0.033;
+  var out = [];
+  var i;
+
+  svg.setAttribute("viewBox",
+    (-pad) + " " + (-pad) + " " + (bedW + pad * 2) + " " + (bedH + pad * 2));
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+  /* The bed itself. */
+  out.push('<rect x="0" y="0" width="' + bedW + '" height="' + bedH +
+           '" rx="' + (span * 0.008) + '" fill="var(--bed)" stroke="var(--bed-line)"' +
+           ' stroke-width="1.5" vector-effect="non-scaling-stroke"/>');
+
+  /* Where the edge buffer ends. */
+  if (gap > 0 && bedW - gap * 2 > 0 && bedH - gap * 2 > 0) {
+    out.push('<rect x="' + gap + '" y="' + gap + '" width="' + (bedW - gap * 2) +
+             '" height="' + (bedH - gap * 2) + '" fill="none" stroke="var(--ink-3)"' +
+             ' stroke-width="1" stroke-dasharray="4 4" opacity=".55"' +
+             ' vector-effect="non-scaling-stroke"/>');
+  }
+
+  function card(r, turned) {
+    return '<rect x="' + r.x + '" y="' + r.y + '" width="' + r.w + '" height="' + r.h +
+           '" rx="' + (Math.min(r.w, r.h) * 0.07) + '" fill="var(' +
+           (turned ? "--warn-soft" : "--accent-soft") + ')" stroke="var(' +
+           (turned ? "--warn" : "--accent") + ')" stroke-width="1.4"' +
+           ' vector-effect="non-scaling-stroke"/>';
+  }
+
+  function note(text, colour) {
+    return '<text x="' + (bedW / 2) + '" y="' + (bedH / 2) + '" text-anchor="middle"' +
+           ' dominant-baseline="middle" font-size="' + (fs * 1.1) + '" fill="var(' + colour +
+           ')" font-family="' + SVG_FONT + '">' + text + '</text>';
+  }
+
+  if (p.total > MAX_DRAWN) {
+    out.push(note(p.total + " cards — too many to draw", "--ink-2"));
+  } else if (p.total === 0) {
+    out.push(note("Nothing fits", "--warn"));
+  } else {
+    for (i = 0; i < p.main.length; i++) out.push(card(p.main[i], false));
+    for (i = 0; i < p.extras.length; i++) out.push(card(p.extras[i], true));
+  }
+
+  /* Bed measurements, just outside the plate. */
+  function lab(x, y, text, rotate) {
+    return '<text x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="middle"' +
+           ' font-size="' + fs + '" fill="var(--ink-3)" font-family="' + SVG_FONT + '"' +
+           (rotate ? ' transform="rotate(-90 ' + x + ' ' + y + ')"' : "") + '>' + text + '</text>';
+  }
+  out.push(lab(bedW / 2, -pad * 0.45, mm(bedW) + " mm", false));
+  out.push(lab(-pad * 0.45, bedH / 2, mm(bedH) + " mm", true));
+
+  svg.innerHTML = out.join("");
+  svg.setAttribute("aria-label",
+    "Plan view of a " + mm(bedW) + " by " + mm(bedH) + " millimetre print bed holding " +
+    p.total + " cards.");
+}
+
+/* ---------- wiring ---------- */
+
+function facts(rows) {
+  els.facts.innerHTML = rows.map(function (r) {
+    return '<li><span class="k">' + r[0] + '</span><span class="v">' + r[1] + '</span></li>';
+  }).join("");
+}
+
+function blank(message) {
+  els.count.textContent = "—";
+  els.unit.textContent = "";
+  els.arrangement.innerHTML = '<span class="nofit">' + message + '</span>';
+  els.legend.hidden = true;
+  els.facts.innerHTML = "";
+  els.svg.innerHTML = "";
+  els.svg.removeAttribute("viewBox");
+}
+
+function refresh() {
+  var bedW = num(els.bedW), bedH = num(els.bedH);
+  var cardW = num(els.cardW), cardH = num(els.cardH);
+  var gap = num(els.gap);
+  if (!isFinite(gap) || gap < 0) gap = 0;
+  var allowExtras = els.extras.checked;
+
+  /* Sliders span the bed and stay in step with the boxes. */
+  var sliderMax = Math.max(10, Math.round(Math.max(bedW || 0, bedH || 0)) || 220);
+  els.cardWr.max = sliderMax;
+  els.cardHr.max = sliderMax;
+  /* The echo beside each slider must never keep showing the last good number
+     after its box has been emptied — a figure on screen that no longer
+     matches the box it belongs to reads as the truth. */
+  if (isFinite(cardW)) {
+    if (parseFloat(els.cardWr.value) !== cardW) els.cardWr.value = Math.min(cardW, sliderMax);
+    els.cardWe.textContent = mm(cardW) + " mm";
+  } else {
+    els.cardWe.textContent = "—";
+  }
+  if (isFinite(cardH)) {
+    if (parseFloat(els.cardHr.value) !== cardH) els.cardHr.value = Math.min(cardH, sliderMax);
+    els.cardHe.textContent = mm(cardH) + " mm";
+  } else {
+    els.cardHe.textContent = "—";
+  }
+
+  if (!(bedW > 0 && bedH > 0 && cardW > 0 && cardH > 0)) {
+    blank("Fill in the bed and the card to see a layout.");
+    return;
+  }
+
+  /* Count first. Working out how many fit is a handful of divisions whatever
+     the answer; building a rectangle for each one is not. A 2000 mm bed with
+     1 mm cards is four million of them, which is pointless work for a picture
+     we are about to refuse to draw. */
+  var p = plan(bedW, bedH, cardW, cardH, gap, allowExtras, false);
+  var tooMany = p.total > MAX_DRAWN;
+  if (!tooMany) p = plan(bedW, bedH, cardW, cardH, gap, allowExtras, true);
+
+  els.count.textContent = String(p.total);
+  els.unit.textContent = p.total === 1 ? "card per print" : "cards per print";
+
+  if (p.total === 0) {
+    var needW = cardW + gap * 2, needH = cardH + gap * 2;
+    els.arrangement.innerHTML =
+      '<span class="nofit">Nothing fits.</span> One card this size needs a bed of at least <b>' +
+      mm(Math.min(needW, needH)) + " &times; " + mm(Math.max(needW, needH)) + " mm</b>.";
+    els.legend.hidden = true;
+    facts([]);
+    draw(bedW, bedH, gap, p);
+    return;
+  }
+
+  var line = "<b>" + p.rows + " row" + (p.rows === 1 ? "" : "s") + " &times; " + p.cols +
+             " column" + (p.cols === 1 ? "" : "s") + "</b>, lying " +
+             (p.turned ? "on their side" : "upright");
+  if (p.extras.length) {
+    line += ' <span class="extra-note">&mdash; plus ' + p.extras.length +
+            " turned into the spare strip</span>";
+  }
+  els.arrangement.innerHTML = line;
+  els.legend.hidden = p.extras.length === 0;
+
+  /* Strip left over beyond the last card, over and above the edge buffer. */
+  var all = p.main.concat(p.extras);
+  var right = 0, bottom = 0, i;
+  for (i = 0; i < all.length; i++) {
+    if (all[i].x + all[i].w > right) right = all[i].x + all[i].w;
+    if (all[i].y + all[i].h > bottom) bottom = all[i].y + all[i].h;
+  }
+  var spareX = Math.max(0, bedW - right - gap);
+  var spareY = Math.max(0, bedH - bottom - gap);
+  var covered = (p.total * cardW * cardH) / (bedW * bedH) * 100;
+
+  var grow = roomToGrow(bedW, bedH, cardW, cardH, gap, allowExtras, p.total);
+
+  facts([
+    ["Room to grow, same shape",
+      (grow && grow.scale > 1.0005)
+        ? mmDown(grow.w) + " × " + mmDown(grow.h) + " mm"
+        : "already at the limit"],
+    /* With no rectangles built there is nothing to measure the strip from,
+       so say nothing rather than print a made-up zero. */
+    ["Strip going to waste", tooMany ? "—" : mm(spareX) + " × " + mm(spareY) + " mm"],
+    ["Bed covered by card", Math.round(covered) + "%"]
+  ]);
+
+  draw(bedW, bedH, gap, p);
+}
+
+/* Number box and slider drive one another. */
+function bind(box, slider) {
+  box.addEventListener("input", function () {
+    var v = parseFloat(box.value);
+    if (isFinite(v)) slider.value = v;
+    refresh();
+  });
+  slider.addEventListener("input", function () {
+    box.value = slider.value;
+    refresh();
+  });
+}
+
+bind(els.cardW, els.cardWr);
+bind(els.cardH, els.cardHr);
+els.bedW.addEventListener("input", refresh);
+els.bedH.addEventListener("input", refresh);
+els.gap.addEventListener("input", refresh);
+els.extras.addEventListener("change", refresh);
+
+els.reset.addEventListener("click", function () {
+  els.bedW.value = DEFAULTS.bedW;
+  els.bedH.value = DEFAULTS.bedH;
+  els.cardW.value = DEFAULTS.cardW;
+  els.cardH.value = DEFAULTS.cardH;
+  els.gap.value = DEFAULTS.gap;
+  els.cardWr.value = DEFAULTS.cardW;
+  els.cardHr.value = DEFAULTS.cardH;
+  els.extras.checked = true;
+  refresh();
+});
+
+refresh();
+
+</script>
+
+</body>
+</html>

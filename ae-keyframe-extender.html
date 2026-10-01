@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AE Keyframe Extender</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { background-color: #0b1120; }
+  textarea, .mono { font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", "Consolas", "Liberation Mono", Menlo, monospace; }
+  ::-webkit-scrollbar { height: 10px; width: 10px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  .flash { animation: flashbg 0.9s ease-out; }
+  @keyframes flashbg { 0% { background-color: rgba(45,212,191,0.35); } 100% { background-color: transparent; } }
+</style>
+<!-- Shared suite shell: back button + tool switcher. See docs/adding-a-tool.md -->
+<link rel="stylesheet" href="assets/app-shell.css">
+<script src="assets/tools.js" defer></script>
+<script src="assets/app-shell.js" data-theme="dark" defer></script>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+
+<div class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+
+  <!-- Header -->
+  <header class="mb-8">
+    <div class="flex items-center gap-3">
+      <div class="h-9 w-9 rounded-lg bg-teal-500/15 border border-teal-500/40 flex items-center justify-center text-teal-400 font-bold text-lg">K</div>
+      <div>
+        <h1 class="text-xl sm:text-2xl font-semibold text-slate-50 tracking-tight">AE Keyframe Extender</h1>
+        <p class="text-sm text-slate-400">Retime a linear two-keyframe move to new head/tail timecodes at the same constant speed.</p>
+      </div>
+    </div>
+    <p class="mt-3 text-xs sm:text-sm text-amber-300/90 bg-amber-500/10 border border-amber-500/25 rounded-md px-3 py-2 inline-block">
+      Only linear (constant-velocity) motion is supported. For every property, only the <strong>first</strong> and <strong>last</strong> keyframe in the pasted data are used as the linear pair — anything in between is ignored.
+    </p>
+  </header>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- Left: paste input -->
+    <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-slate-100">1. Paste AE Keyframe Data</h2>
+        <button id="loadExampleBtn" type="button" class="text-xs text-teal-400 hover:text-teal-300 underline underline-offset-2">Load example</button>
+      </div>
+      <p class="text-xs text-slate-500 mb-2">In After Effects: select 2+ keyframes on a property → Edit &gt; Copy → paste the raw clipboard text below.</p>
+      <textarea id="pasteArea" spellcheck="false"
+        class="mono w-full flex-1 min-h-[260px] resize-y bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500/60 focus:border-teal-500/60 placeholder-slate-600"
+        placeholder="Adobe After Effects 9.0 Keyframe Data&#10;&#10;&#9;Units Per Second&#9;24&#10;&#9;Source Width&#9;1920&#10;...&#10;&#10;Null 1&#10;Transform&#9;Position&#10;&#9;Frame&#9;X pixels&#9;Y pixels&#9;&#10;&#9;24&#9;960&#9;540&#9;&#10;&#9;48&#9;1500&#9;300&#9;&#10;&#10;End of Keyframe Data"></textarea>
+      <div id="parseStatus" class="mt-2 text-xs"></div>
+    </section>
+
+    <!-- Right: targets -->
+    <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col gap-4">
+      <h2 class="text-sm font-semibold text-slate-100">2. New Target Timecodes</h2>
+
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Comp Frame Rate Preset (timecode base)</label>
+        <select id="fpsPreset" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/60">
+          <option value="23.976">23.976 fps (NDF)</option>
+          <option value="24" selected>24 fps (NDF)</option>
+        </select>
+        <p id="fpsHint" class="text-xs text-slate-500 mt-1">Both presets display timecode with a 24-frames-per-second base (FF 0&ndash;23), so this only affects labeling/validation, not the frame math.</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">New Target Start Timecode</label>
+          <input id="targetStart" type="text" placeholder="00:00:00:00"
+            class="mono w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/60 placeholder-slate-600">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">New Target End Timecode</label>
+          <input id="targetEnd" type="text" placeholder="00:00:01:00"
+            class="mono w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/60 placeholder-slate-600">
+        </div>
+      </div>
+      <p class="text-xs text-slate-500">Format: HH:MM:SS:FF (AE-style short forms like 0:00:00:00 are also accepted).</p>
+      <div id="tcStatus" class="text-xs"></div>
+
+      <div class="border-t border-slate-800 pt-3 mt-1">
+        <h3 class="text-xs font-semibold text-slate-300 mb-1">Detected source metadata</h3>
+        <div id="metaBox" class="text-xs text-slate-400 mono space-y-0.5">
+          <span class="text-slate-600">— paste keyframe data to see metadata —</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Results -->
+  <section class="mt-6 bg-slate-900/60 border border-slate-800 rounded-xl p-4 sm:p-5">
+    <h2 class="text-sm font-semibold text-slate-100 mb-3">3. Live Results</h2>
+    <div id="resultsWrap" class="overflow-x-auto">
+      <div id="resultsPlaceholder" class="text-sm text-slate-500">Paste keyframe data and enter target timecodes above to see computed speeds and extrapolated values here.</div>
+      <table id="resultsTable" class="hidden w-full text-xs border-collapse">
+        <thead>
+          <tr class="text-slate-400 text-left border-b border-slate-800">
+            <th class="py-2 pr-3 font-medium">Property / Channel</th>
+            <th class="py-2 pr-3 font-medium">Orig. Speed (units/frame)</th>
+            <th class="py-2 pr-3 font-medium">Orig. Range (frames)</th>
+            <th class="py-2 pr-3 font-medium">New Range (frames)</th>
+            <th class="py-2 pr-3 font-medium">&Delta; Frames</th>
+            <th class="py-2 pr-3 font-medium">New Start Value</th>
+            <th class="py-2 pr-3 font-medium">New End Value</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody" class="divide-y divide-slate-800/70"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Output -->
+  <section class="mt-6 bg-slate-900/60 border border-slate-800 rounded-xl p-4 sm:p-5">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-sm font-semibold text-slate-100">4. Generated Keyframe Data</h2>
+      <button id="copyBtn" type="button" disabled
+        class="text-xs font-medium px-3 py-1.5 rounded-md bg-teal-600 text-white hover:bg-teal-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors">
+        Copy to Clipboard
+      </button>
+    </div>
+    <p class="text-xs text-slate-500 mb-2">Select the two original keyframes on the layer in After Effects, then Edit &gt; Paste this block over them.</p>
+    <textarea id="outputArea" readonly spellcheck="false"
+      class="mono w-full min-h-[220px] resize-y bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500/60"
+      placeholder="Generated output will appear here once valid keyframe data and target timecodes are provided."></textarea>
+    <div id="copyStatus" class="text-xs mt-1 h-4"></div>
+  </section>
+
+  <footer class="mt-8 text-xs text-slate-600 text-center">
+    Runs entirely in your browser. Nothing you paste here is uploaded anywhere.
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   1. Timecode & Frame Engine
+   Both supported presets (23.976 / 24 fps NDF) display AE
+   timecode with a nominal base-24 frame count per second
+   (FF ranges 0-23 either way), so the pure frame<->timecode
+   math below is fixed at base 24 regardless of which preset
+   is selected. The preset selector exists for labeling /
+   sanity-checking against the pasted Units Per Second value.
+   ============================================================ */
+const FPS_BASE = 24;
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+// toFrames(hh,mm,ss,ff) -> integer total frames from 00:00:00:00
+function toFrames(hh, mm, ss, ff) {
+  return ((hh * 3600) + (mm * 60) + ss) * FPS_BASE + ff;
+}
+
+// toTimecode(totalFrames) -> zero-padded "HH:MM:SS:FF" string (UI-facing form)
+function toTimecode(totalFrames) {
+  const sign = totalFrames < 0 ? "-" : "";
+  let f = Math.abs(Math.round(totalFrames));
+  const ff = f % FPS_BASE;
+  let totalSeconds = Math.floor(f / FPS_BASE);
+  const ss = totalSeconds % 60;
+  totalSeconds = Math.floor(totalSeconds / 60);
+  const mm = totalSeconds % 60;
+  const hh = Math.floor(totalSeconds / 60);
+  return `${sign}${pad2(hh)}:${pad2(mm)}:${pad2(ss)}:${pad2(ff)}`;
+}
+
+// formatRowTimecode(totalFrames) -> AE-clipboard-style "H:MM:SS:FF"
+// (hour is NOT zero-padded, matching how AE writes absolute timecode rows
+// in Keyframe Data, e.g. "0:00:24:00" for an absolute frame 24 at 24fps).
+function formatRowTimecode(totalFrames) {
+  const sign = totalFrames < 0 ? "-" : "";
+  let f = Math.abs(Math.round(totalFrames));
+  const ff = f % FPS_BASE;
+  let totalSeconds = Math.floor(f / FPS_BASE);
+  const ss = totalSeconds % 60;
+  totalSeconds = Math.floor(totalSeconds / 60);
+  const mm = totalSeconds % 60;
+  const hh = Math.floor(totalSeconds / 60);
+  return `${sign}${hh}:${pad2(mm)}:${pad2(ss)}:${pad2(ff)}`;
+}
+
+// Parses a user-typed or AE-pasted timecode token into {hh,mm,ss,ff,frames}.
+// Accepts "HH:MM:SS:FF" and AE's short form "H:MM:SS:FF", with either
+// ':' or ';' before the frame count (drop-frame semicolon is accepted
+// on read but not required, since both supported presets are NDF).
+function parseTimecodeToken(token) {
+  const m = String(token).trim().match(/^(-)?(\d+):(\d{2}):(\d{2})[:;](\d{2})$/);
+  if (!m) return null;
+  const neg = !!m[1];
+  const hh = parseInt(m[2], 10);
+  const mm = parseInt(m[3], 10);
+  const ss = parseInt(m[4], 10);
+  const ff = parseInt(m[5], 10);
+  if (mm > 59 || ss > 59 || ff >= FPS_BASE) return null;
+  const frames = (neg ? -1 : 1) * toFrames(hh, mm, ss, ff);
+  return { hh, mm, ss, ff, neg, frames };
+}
+
+// Strict-ish parser for the two "New Target ... Timecode" UI fields.
+// Throws a descriptive Error on anything unparseable.
+function parseUserTimecode(str) {
+  const trimmed = String(str).trim();
+  if (trimmed === "") throw new Error("empty timecode");
+  const parsed = parseTimecodeToken(trimmed);
+  if (!parsed) {
+    throw new Error(`"${str}" isn't a valid timecode. Use HH:MM:SS:FF (FF 0-23).`);
+  }
+  return parsed;
+}
+
+/* ============================================================
+   2. AE Keyframe Data Parser
+   ============================================================ */
+
+class KeyframeParseError extends Error {}
+
+function normalizeLineEndings(text) {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function splitRowCells(line) {
+  // Table rows are wrapped with a leading + trailing tab:
+  // "\tFrame\tX pixels\tY pixels\t" -> ["Frame","X pixels","Y pixels"]
+  let cells = line.split("\t");
+  if (cells.length && cells[0] === "") cells.shift();
+  if (cells.length && cells[cells.length - 1] === "") cells.pop();
+  return cells;
+}
+
+// A table row (column-header or data row) always has both a leading and a
+// trailing tab (the format's implicit empty first/last cell). A metadata
+// line always has a leading tab but NEVER a trailing one. This invariant
+// lets the parser tell the two apart even if a blank-line separator is
+// missing or duplicated somewhere in a messy paste.
+function isTableRow(line) {
+  return line.length > 0 && line[0] === "\t" && line[line.length - 1] === "\t";
+}
+function isMetadataLine(line) {
+  return line.length > 0 && line[0] === "\t" && line[line.length - 1] !== "\t";
+}
+
+// A "GroupName\tPropertyName" title line has a tab in its middle but,
+// unlike a table row, is NOT wrapped in a leading+trailing tab. Used to
+// recognize a real title-with-group line when deciding whether the line
+// before it is an optional layer-name line (see the property-block loop).
+function isTitleWithGroupLine(line) {
+  return line.indexOf("\t") !== -1 && !isTableRow(line);
+}
+
+function unitLabelForToken(token) {
+  const tcMatch = /^-?\d+:\d{2}:\d{2}[:;]\d{2}$/.test(token.trim());
+  const intMatch = /^-?\d+$/.test(token.trim());
+  if (tcMatch) return "timecode";
+  if (intMatch) return "frames";
+  return null;
+}
+
+// Parses one raw AE Keyframe Data clipboard block into a structured object.
+// Throws KeyframeParseError for issues that make the whole paste unusable.
+// Per-property issues (fewer than 2 keyframes, zero-duration pair) are
+// attached to that property's `.error` field instead, so a bad property
+// doesn't take down other valid ones pasted alongside it.
+function parseKeyframeBlock(rawText) {
+  const text = normalizeLineEndings(rawText);
+
+  if (text.trim() === "") {
+    throw new KeyframeParseError("Nothing was pasted.");
+  }
+
+  const headerMatch = text.match(/Adobe After Effects\s+([\d.]+)\s+Keyframe Data/);
+  if (!headerMatch) {
+    throw new KeyframeParseError(
+      "This doesn't look like AE Keyframe Data — the \"Adobe After Effects <version> Keyframe Data\" header line is missing. " +
+      "In After Effects, select keyframes on the timeline and use Edit > Copy, then paste the raw text here."
+    );
+  }
+  const version = headerMatch[1];
+
+  const lines = text.split("\n");
+  let idx = lines.findIndex((l) => l.indexOf("Adobe After Effects") !== -1 && l.indexOf("Keyframe Data") !== -1);
+  idx++;
+
+  // skip blank line(s) after header
+  while (idx < lines.length && lines[idx].trim() === "") idx++;
+
+  // Metadata block: consecutive lines that look like metadata lines
+  // (leading tab, no trailing tab). Stopping on the structural shape
+  // rather than only on a blank line means a paste that's missing its
+  // blank-line separator (e.g. trimmed/edited by hand) still hands off
+  // cleanly to property-block parsing instead of silently swallowing
+  // the first property block as bogus "metadata".
+  const metadataLines = [];
+  while (idx < lines.length && isMetadataLine(lines[idx])) {
+    metadataLines.push(lines[idx]);
+    idx++;
+  }
+
+  const metadata = {};
+  for (const line of metadataLines) {
+    const m = line.match(/^\t([^\t]+)\t(.*)$/);
+    if (m) metadata[m[1]] = m[2];
+  }
+  if (!("Units Per Second" in metadata)) {
+    throw new KeyframeParseError(
+      "Metadata block is missing \"Units Per Second\" — this doesn't look like a complete AE Keyframe Data paste."
+    );
+  }
+
+  // skip blank line(s) before first property block
+  while (idx < lines.length && lines[idx].trim() === "") idx++;
+
+  const properties = [];
+  // Raw text of the most recently seen layer-name line (see below), or
+  // null if none has appeared yet. Persists across iterations: it stays
+  // in effect for every following property block until a new layer-name
+  // line is seen or the paste ends.
+  let currentLayerNameLine = null;
+  while (idx < lines.length) {
+    const line = lines[idx];
+    if (line.trim() === "" ) { idx++; continue; }
+    if (/^End of Keyframe Data\s*$/.test(line.trim())) { idx++; break; }
+
+    // Optional layer-name line: a bare line with no tabs (e.g. "Layer",
+    // "Null 1", "BG Solid") sitting directly before a property's
+    // "GroupName\tPropertyName" title line, naming the layer that property
+    // belongs to. It's told apart from a title line that has no group
+    // (also tab-free — the defensive titleParts.length===1 case just
+    // below) by looking at the *next* line: a real group+property title
+    // line has a tab in the middle but is NOT a table row, so if the next
+    // line has that shape, the current line must be the layer name rather
+    // than the title itself. This is a heuristic (AE's real format wasn't
+    // fully documented for the no-group and multi-layer cases at the time
+    // this was written) — see the parser's report notes.
+    if (!line.includes("\t") && idx + 1 < lines.length && isTitleWithGroupLine(lines[idx + 1])) {
+      currentLayerNameLine = line;
+      idx++;
+    }
+
+    const titleLine = lines[idx];
+    idx++;
+    if (idx >= lines.length) {
+      throw new KeyframeParseError(`Property block "${titleLine.trim()}" is missing its column header row.`);
+    }
+    const headerRow = lines[idx];
+    idx++;
+
+    const titleParts = titleLine.split("\t");
+    const group = titleParts.length > 1 ? titleParts[0] : "";
+    const propertyName = titleParts.length > 1 ? titleParts.slice(1).join("\t") : titleParts[0];
+    const baseLabel = group ? `${group} → ${propertyName}` : propertyName;
+    const layerName = currentLayerNameLine !== null ? currentLayerNameLine.trim() : null;
+    const label = layerName ? `${layerName} → ${baseLabel}` : baseLabel;
+
+    const prop = {
+      group, propertyName, label,
+      layerName,
+      layerNameLine: currentLayerNameLine,
+      columns: null,
+      channelLabels: [],
+      rowStyle: null,
+      rows: [],
+      error: null,
+    };
+
+    if (!isTableRow(headerRow)) {
+      prop.error = `"${label}": expected a column-header row (e.g. "\\tFrame\\tX pixels\\t...") right after the title line, but got something else — the pasted block may be malformed or missing its blank-line separators.`;
+      properties.push(prop);
+      while (idx < lines.length && lines[idx].trim() === "") idx++;
+      continue;
+    }
+
+    const columns = splitRowCells(headerRow); // e.g. ["Frame","X pixels","Y pixels"]
+    prop.columns = columns;
+    prop.channelLabels = columns.slice(1);
+
+    // Data rows: consecutive proper table rows (leading+trailing tab).
+    // Using the structural shape (not just "until blank line") means a
+    // missing blank-line separator before the next title line or the
+    // footer still ends this property's rows at the right place.
+    const dataRows = [];
+    while (idx < lines.length && isTableRow(lines[idx])) {
+      dataRows.push(lines[idx]);
+      idx++;
+    }
+
+    if (dataRows.length === 0) {
+      prop.error = `"${label}" has no keyframe rows.`;
+      properties.push(prop);
+      // still advance past the blank separator
+      while (idx < lines.length && lines[idx].trim() === "") idx++;
+      continue;
+    }
+
+    let parseFailed = null;
+    for (const rowLine of dataRows) {
+      const cells = splitRowCells(rowLine);
+      if (cells.length !== columns.length) {
+        parseFailed = `"${label}" has a row with ${cells.length} value(s) but the header declares ${columns.length} column(s).`;
+        break;
+      }
+      const frameToken = cells[0];
+      const style = unitLabelForToken(frameToken);
+      if (!style) {
+        parseFailed = `"${label}": couldn't parse "${frameToken}" as a frame number or timecode.`;
+        break;
+      }
+      if (prop.rowStyle && prop.rowStyle !== style) {
+        parseFailed = `"${label}" mixes frame-number and timecode rows — can't parse consistently.`;
+        break;
+      }
+      prop.rowStyle = style;
+
+      let frame;
+      if (style === "timecode") {
+        const tc = parseTimecodeToken(frameToken);
+        if (!tc) { parseFailed = `"${label}": invalid timecode "${frameToken}".`; break; }
+        frame = tc.frames;
+      } else {
+        frame = parseInt(frameToken, 10);
+      }
+
+      const values = [];
+      for (let c = 1; c < cells.length; c++) {
+        const num = Number(cells[c]);
+        if (!Number.isFinite(num)) {
+          parseFailed = `"${label}": non-numeric value "${cells[c]}" in column "${columns[c]}".`;
+          break;
+        }
+        values.push(num);
+      }
+      if (parseFailed) break;
+
+      prop.rows.push({ frame, values });
+    }
+
+    if (parseFailed) {
+      prop.error = parseFailed;
+    } else if (prop.rows.length < 2) {
+      prop.error = `"${label}" has only ${prop.rows.length} keyframe(s) — at least 2 are required to define linear motion.`;
+    }
+
+    properties.push(prop);
+    while (idx < lines.length && lines[idx].trim() === "") idx++;
+  }
+
+  if (properties.length === 0) {
+    throw new KeyframeParseError("No property keyframe blocks were found between the metadata and \"End of Keyframe Data\".");
+  }
+
+  return { version, metadata, metadataLines, properties };
+}
+
+/* ============================================================
+   3. Extrapolation & Constant Speed Engine
+   ============================================================ */
+
+// For a single already-validated property, compute the linear speed
+// per channel from its first & last keyframe, and (if target frames
+// are supplied) the extrapolated new start/end values.
+function computeExtrapolation(prop, targetStartFrame, targetEndFrame) {
+  const first = prop.rows[0];
+  const last = prop.rows[prop.rows.length - 1];
+  const frameStart = first.frame;
+  const frameEnd = last.frame;
+
+  const result = {
+    label: prop.label,
+    channelLabels: prop.channelLabels,
+    frameStart, frameEnd,
+    originalRange: frameEnd - frameStart,
+    error: null,
+    channels: null,
+    newFrameStart: null,
+    newFrameEnd: null,
+    targetRange: null,
+  };
+
+  if (frameEnd === frameStart) {
+    result.error = "Zero-duration source: first and last keyframe are on the same frame, so speed is undefined.";
+    return result;
+  }
+
+  const speeds = first.values.map((v0, i) => (last.values[i] - v0) / (frameEnd - frameStart));
+  result.channels = speeds.map((speed, i) => ({ label: prop.channelLabels[i] || `ch${i}`, speed, valueStart: first.values[i] }));
+
+  if (targetStartFrame == null || targetEndFrame == null) {
+    return result; // partial result: speeds only, no target values yet
+  }
+
+  // Frame numbers in AE Keyframe Data are ABSOLUTE positions on the comp
+  // timeline (frame 0 = start of the comp), not relative-zeroed to the
+  // first selected keyframe. So the new keyframes must land on the actual
+  // absolute target frames the user asked for, not a 0-based range.
+  result.newFrameStart = targetStartFrame;
+  result.newFrameEnd = targetEndFrame;
+  result.targetRange = targetEndFrame - targetStartFrame;
+
+  result.channels = result.channels.map((ch) => ({
+    ...ch,
+    newStart: ch.valueStart + (targetStartFrame - frameStart) * ch.speed,
+    newEnd: ch.valueStart + (targetEndFrame - frameStart) * ch.speed,
+  }));
+
+  return result;
+}
+
+/* ============================================================
+   5. Output Generator
+   ============================================================ */
+
+function decimalsForUnitLabel(label) {
+  const l = String(label || "").toLowerCase();
+  if (l.includes("pixel")) return 3;
+  if (l.includes("percent")) return 3;
+  if (l.includes("degree")) return 2;
+  if (l.includes("millimeter") || l.includes("inch")) return 3;
+  return 4; // generic fallback for effect params / unknown units
+}
+
+function formatNumber(value, decimals) {
+  if (!Number.isFinite(value)) return "0";
+  let v = Number(value.toFixed(decimals));
+  if (Object.is(v, -0)) v = 0;
+  if (Number.isInteger(v)) return String(v);
+  let s = v.toFixed(decimals);
+  s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
+
+// Builds one full, pasteable AE Keyframe Data text block from the parsed
+// input's header/metadata (carried forward unchanged) and the computed
+// per-property extrapolation results.
+function generateOutputBlock(parsed, computedResults) {
+  // computedResults is always parsed.properties.map(...) (see recompute()) —
+  // same length, same order — so pair each result with its source property
+  // by that shared index *before* filtering. Filtering the two arrays
+  // separately (by r.error vs p.error, two different predicates — a
+  // zero-duration result sets r.error but never p.error) can desync the
+  // indices and silently attach the wrong property's title/columns to a
+  // result's values.
+  const usable = computedResults
+    .map((r, i) => ({ r, prop: parsed.properties[i] }))
+    .filter(({ r }) => !r.error && r.channels && r.newFrameStart != null);
+  if (usable.length === 0) return null;
+
+  const headerLine = `Adobe After Effects ${parsed.version} Keyframe Data`;
+  const metadataBlock = parsed.metadataLines.join("\n");
+
+  const blocks = usable.map(({ r, prop }) => {
+    // Reproduce the source's layer-name line verbatim directly before the
+    // title line, when the source had one (omit it otherwise).
+    const layerPrefix = prop.layerNameLine != null ? `${prop.layerNameLine}\n` : "";
+    const titleLine = prop.group ? `${prop.group}\t${prop.propertyName}` : prop.propertyName;
+    const headerRow = "\t" + prop.columns.join("\t") + "\t";
+
+    const rowStyle = prop.rowStyle;
+    const frameCell = (f) => (rowStyle === "timecode" ? formatRowTimecode(f) : String(Math.round(f)));
+
+    const startCells = [frameCell(r.newFrameStart), ...r.channels.map((ch) => formatNumber(ch.newStart, decimalsForUnitLabel(ch.label)))];
+    const endCells = [frameCell(r.newFrameEnd), ...r.channels.map((ch) => formatNumber(ch.newEnd, decimalsForUnitLabel(ch.label)))];
+
+    const startRow = "\t" + startCells.join("\t") + "\t";
+    const endRow = "\t" + endCells.join("\t") + "\t";
+
+    return `${layerPrefix}${titleLine}\n${headerRow}\n${startRow}\n${endRow}`;
+  });
+
+  return `${headerLine}\n\n${metadataBlock}\n\n${blocks.join("\n\n")}\n\nEnd of Keyframe Data`;
+}
+
+/* ============================================================
+   4. UI wiring
+   ============================================================ */
+
+const els = {
+  pasteArea: document.getElementById("pasteArea"),
+  loadExampleBtn: document.getElementById("loadExampleBtn"),
+  parseStatus: document.getElementById("parseStatus"),
+  fpsPreset: document.getElementById("fpsPreset"),
+  fpsHint: document.getElementById("fpsHint"),
+  targetStart: document.getElementById("targetStart"),
+  targetEnd: document.getElementById("targetEnd"),
+  tcStatus: document.getElementById("tcStatus"),
+  metaBox: document.getElementById("metaBox"),
+  resultsPlaceholder: document.getElementById("resultsPlaceholder"),
+  resultsTable: document.getElementById("resultsTable"),
+  resultsBody: document.getElementById("resultsBody"),
+  outputArea: document.getElementById("outputArea"),
+  copyBtn: document.getElementById("copyBtn"),
+  copyStatus: document.getElementById("copyStatus"),
+};
+
+const EXAMPLE_DATA = [
+  "Adobe After Effects 9.0 Keyframe Data",
+  "",
+  "\tUnits Per Second\t24",
+  "\tSource Width\t1920",
+  "\tSource Height\t1080",
+  "\tSource Pixel Aspect Ratio\t1",
+  "\tComp Pixel Aspect Ratio\t1",
+  "",
+  "Null 1",
+  "Transform\tPosition",
+  "\tFrame\tX pixels\tY pixels\tZ pixels\t",
+  "\t24\t960\t540\t0\t",
+  "\t36\t1120.5\t480\t0\t",
+  "\t48\t1500\t300\t-50.25\t",
+  "",
+  "Transform\tOpacity",
+  "\tFrame\tpercent\t",
+  "\t24\t100\t",
+  "\t48\t0\t",
+  "",
+  "End of Keyframe Data",
+].join("\n");
+
+els.loadExampleBtn.addEventListener("click", () => {
+  els.pasteArea.value = EXAMPLE_DATA;
+  els.pasteArea.classList.add("flash");
+  setTimeout(() => els.pasteArea.classList.remove("flash"), 900);
+  recompute();
+});
+
+function suggestFpsPreset(unitsPerSecondStr) {
+  const ups = Number(unitsPerSecondStr);
+  if (!Number.isFinite(ups)) {
+    els.fpsHint.textContent = "Both presets display timecode with a 24-frames-per-second base (FF 0–23), so this only affects labeling/validation, not the frame math.";
+    return;
+  }
+  const near = (a, b) => Math.abs(a - b) < 0.01;
+  if (near(ups, 23.976023976023978) || near(ups, 23.976)) {
+    els.fpsPreset.value = "23.976";
+    els.fpsHint.textContent = `Detected comp rate ${ups} ≈ 23.976 fps — preset auto-selected.`;
+  } else if (near(ups, 24)) {
+    els.fpsPreset.value = "24";
+    els.fpsHint.textContent = `Detected comp rate ${ups} = 24 fps — preset auto-selected.`;
+  } else {
+    els.fpsHint.textContent = `Detected comp rate ${ups} matches neither 23.976 nor 24 fps exactly — using the preset selected above (both use a 24-per-second timecode base, so the frame math is unaffected).`;
+  }
+}
+
+function renderMetadata(parsed) {
+  const keys = ["Units Per Second", "Source Width", "Source Height", "Source Pixel Aspect Ratio", "Comp Pixel Aspect Ratio"];
+  els.metaBox.innerHTML = "";
+  for (const k of keys) {
+    const v = parsed.metadata[k];
+    const row = document.createElement("div");
+    row.innerHTML = `<span class="text-slate-500">${k}:</span> <span class="text-slate-300">${v !== undefined ? escapeHtml(v) : "—"}</span>`;
+    els.metaBox.appendChild(row);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function setParseStatus(kind, message) {
+  const colors = { ok: "text-teal-400", warn: "text-amber-400", error: "text-red-400", muted: "text-slate-500" };
+  els.parseStatus.className = `mt-2 text-xs ${colors[kind] || colors.muted}`;
+  els.parseStatus.textContent = message;
+}
+
+function resetMetaBox() {
+  els.metaBox.innerHTML = '<span class="text-slate-600">— paste keyframe data to see metadata —</span>';
+}
+
+function showResultsPlaceholder(msg) {
+  els.resultsPlaceholder.textContent = msg;
+  els.resultsPlaceholder.classList.remove("hidden");
+  els.resultsTable.classList.add("hidden");
+  els.resultsBody.innerHTML = "";
+}
+
+function renderResults(computedResults, tcReady) {
+  if (computedResults.length === 0) {
+    showResultsPlaceholder("No properties to show yet.");
+    return;
+  }
+  els.resultsPlaceholder.classList.add("hidden");
+  els.resultsTable.classList.remove("hidden");
+  els.resultsBody.innerHTML = "";
+
+  for (const r of computedResults) {
+    const headRow = document.createElement("tr");
+    headRow.className = "bg-slate-900/40";
+    if (r.error) {
+      headRow.innerHTML = `<td colspan="7" class="py-2 pr-3"><span class="text-slate-200 font-medium">${escapeHtml(r.label)}</span> <span class="text-red-400 ml-2">${escapeHtml(r.error)}</span></td>`;
+      els.resultsBody.appendChild(headRow);
+      continue;
+    }
+    headRow.innerHTML = `<td colspan="7" class="py-2 pr-3 text-slate-200 font-medium">${escapeHtml(r.label)} <span class="text-slate-500 font-normal">(frames ${r.frameStart} → ${r.frameEnd}, ${r.rowStyleLabel || ""})</span></td>`;
+    els.resultsBody.appendChild(headRow);
+
+    for (const ch of r.channels) {
+      const tr = document.createElement("tr");
+      tr.className = "text-slate-300";
+      const speedStr = formatNumber(ch.speed, 6);
+      const newRangeStr = (r.newFrameStart != null && r.newFrameEnd != null) ? `${r.newFrameStart} → ${r.newFrameEnd}` : "—";
+      const deltaStr = r.targetRange != null ? String(r.targetRange - r.originalRange) : "—";
+      const newStartStr = ch.newStart != null ? formatNumber(ch.newStart, decimalsForUnitLabel(ch.label)) : "—";
+      const newEndStr = ch.newEnd != null ? formatNumber(ch.newEnd, decimalsForUnitLabel(ch.label)) : "—";
+      tr.innerHTML = `
+        <td class="py-1.5 pr-3 pl-4 text-slate-400">${escapeHtml(ch.label)}</td>
+        <td class="py-1.5 pr-3 mono">${speedStr}</td>
+        <td class="py-1.5 pr-3 mono">${r.frameStart} → ${r.frameEnd}</td>
+        <td class="py-1.5 pr-3 mono">${newRangeStr}</td>
+        <td class="py-1.5 pr-3 mono ${!tcReady ? "text-slate-600" : ""}">${deltaStr}</td>
+        <td class="py-1.5 pr-3 mono text-teal-300">${newStartStr}</td>
+        <td class="py-1.5 pr-3 mono text-teal-300">${newEndStr}</td>`;
+      els.resultsBody.appendChild(tr);
+    }
+  }
+}
+
+function setOutput(text) {
+  els.outputArea.value = text || "";
+  els.copyBtn.disabled = !text;
+}
+
+function recompute() {
+  const raw = els.pasteArea.value;
+  els.copyStatus.textContent = "";
+
+  if (raw.trim() === "") {
+    setParseStatus("muted", "Paste an AE Keyframe Data block above to begin.");
+    resetMetaBox();
+    els.fpsHint.textContent = "Both presets display timecode with a 24-frames-per-second base (FF 0–23), so this only affects labeling/validation, not the frame math.";
+    showResultsPlaceholder("Paste keyframe data and enter target timecodes above to see computed speeds and extrapolated values here.");
+    setOutput("");
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseKeyframeBlock(raw);
+  } catch (err) {
+    setParseStatus("error", err.message);
+    resetMetaBox();
+    showResultsPlaceholder("Fix the paste error above to see results.");
+    setOutput("");
+    return;
+  }
+
+  const okCount = parsed.properties.filter((p) => !p.error).length;
+  const total = parsed.properties.length;
+  if (okCount === total) {
+    setParseStatus("ok", `Parsed ${total} propert${total === 1 ? "y" : "ies"} — AE ${parsed.version}, ${parsed.properties.map((p) => p.label).join(", ")}.`);
+  } else if (okCount > 0) {
+    setParseStatus("warn", `Parsed ${total} propert${total === 1 ? "y" : "ies"}, ${total - okCount} with errors (see below).`);
+  } else {
+    setParseStatus("error", `Found ${total} propert${total === 1 ? "y" : "ies"} but none are usable (see errors below).`);
+  }
+
+  renderMetadata(parsed);
+  suggestFpsPreset(parsed.metadata["Units Per Second"]);
+
+  // Target timecodes
+  const startStr = els.targetStart.value;
+  const endStr = els.targetEnd.value;
+  let targetStart = null, targetEnd = null;
+  const tcErrors = [];
+
+  if (startStr.trim() !== "") {
+    try { targetStart = parseUserTimecode(startStr); }
+    catch (e) { tcErrors.push("Start: " + e.message); }
+  }
+  if (endStr.trim() !== "") {
+    try { targetEnd = parseUserTimecode(endStr); }
+    catch (e) { tcErrors.push("End: " + e.message); }
+  }
+
+  let targetStartFrame = targetStart ? targetStart.frames : null;
+  let targetEndFrame = targetEnd ? targetEnd.frames : null;
+
+  if (targetStartFrame != null && targetEndFrame != null && targetEndFrame === targetStartFrame) {
+    tcErrors.push("Start and End timecodes are identical — the new range would be zero frames long.");
+    targetEndFrame = null; // suppress target-value math, keep speeds visible
+  } else if (targetStartFrame != null && targetEndFrame != null && targetEndFrame < targetStartFrame) {
+    tcErrors.push("End timecode is earlier than Start timecode — swap them so End comes after Start.");
+    targetEndFrame = null; // suppress target-value math, keep speeds visible
+  }
+
+  if (tcErrors.length) {
+    els.tcStatus.className = "text-xs text-amber-400";
+    els.tcStatus.textContent = tcErrors.join("  •  ");
+  } else if (targetStartFrame != null && targetEndFrame != null) {
+    els.tcStatus.className = "text-xs text-teal-400";
+    els.tcStatus.textContent = `New range: ${targetEndFrame - targetStartFrame} frame(s) (was entering as absolute frames ${targetStartFrame} → ${targetEndFrame}).`;
+  } else {
+    els.tcStatus.className = "text-xs text-slate-500";
+    els.tcStatus.textContent = "Enter both target timecodes to compute extrapolated values.";
+  }
+
+  const tcReady = targetStartFrame != null && targetEndFrame != null && tcErrors.length === 0;
+
+  const computedResults = parsed.properties.map((prop) => {
+    if (prop.error) {
+      return { label: prop.label, error: prop.error, channels: [] };
+    }
+    const r = computeExtrapolation(prop, tcReady ? targetStartFrame : null, tcReady ? targetEndFrame : null);
+    r.rowStyleLabel = prop.rowStyle === "timecode" ? "timecode rows" : "frame-number rows";
+    return r;
+  });
+
+  renderResults(computedResults, tcReady);
+
+  if (!tcReady) {
+    setOutput("");
+    return;
+  }
+
+  const output = generateOutputBlock(parsed, computedResults);
+  if (!output) {
+    setOutput("");
+    els.copyStatus.textContent = "No property extrapolated cleanly — fix the errors above to generate output.";
+    els.copyStatus.className = "text-xs mt-1 h-4 text-amber-400";
+  } else {
+    setOutput(output);
+  }
+}
+
+// Copy to clipboard with fallback for non-secure contexts
+els.copyBtn.addEventListener("click", async () => {
+  const text = els.outputArea.value;
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      flashCopyStatus("Copied to clipboard.", "text-teal-400");
+      return;
+    }
+    throw new Error("Clipboard API unavailable");
+  } catch (err) {
+    try {
+      els.outputArea.removeAttribute("readonly");
+      els.outputArea.focus();
+      els.outputArea.select();
+      const ok = document.execCommand("copy");
+      els.outputArea.setAttribute("readonly", "true");
+      if (ok) {
+        flashCopyStatus("Copied to clipboard (fallback method).", "text-teal-400");
+      } else {
+        throw new Error("execCommand failed");
+      }
+    } catch (err2) {
+      els.outputArea.focus();
+      els.outputArea.select();
+      flashCopyStatus("Couldn't copy automatically — the text is selected, press Ctrl/Cmd+C to copy manually.", "text-amber-400");
+    }
+  }
+});
+
+function flashCopyStatus(msg, cls) {
+  els.copyStatus.textContent = msg;
+  els.copyStatus.className = `text-xs mt-1 h-4 ${cls}`;
+  setTimeout(() => {
+    if (els.copyStatus.textContent === msg) els.copyStatus.textContent = "";
+  }, 4000);
+}
+
+els.pasteArea.addEventListener("input", recompute);
+els.targetStart.addEventListener("input", recompute);
+els.targetEnd.addEventListener("input", recompute);
+els.fpsPreset.addEventListener("change", recompute);
+
+// Initial state
+recompute();
+</script>
+</body>
+</html>
